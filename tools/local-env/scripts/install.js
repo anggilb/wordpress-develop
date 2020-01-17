@@ -37,8 +37,6 @@ wp_cli(
 	`core install --title="WordPress Develop" --admin_user=admin --admin_password=password --admin_email=test@test.com --skip-email --url=http://wczgz2020.wordpress.test`
 );
 
-execSync("nginx -s reload");
-
 /**
  * Runs WP-CLI commands in the Docker environment.
  *
