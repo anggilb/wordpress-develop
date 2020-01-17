@@ -1,103 +1,108 @@
-version: '3.7'
+version: "3.7"
+
+networks:
+  wordpress.test:
+    name: wordpress.test
 
 services:
-
-  ##
-  # The web server container.
-  ##
-  wordpress-develop:
-    image: nginx:alpine
-
-    networks:
-      - wpdevnet
-
+  traefik:
+    image: "traefik:v2.0.0"
+    command:
+      - "--entrypoints.web.address=:80"
+      - "--providers.docker=true"
+      - "--api.insecure"
+      - "--api.dashboard"
     ports:
-      - ${LOCAL_PORT-8889}:80
-
-    environment:
-      LOCAL_DIR: ${LOCAL_DIR-src}
-
+      - "80:80"
+      - "8080:8080"
     volumes:
-      - ./tools/local-env/default.template:/etc/nginx/conf.d/default.template
-      - ./:/var/www
-
-    # Load our config file, substituning environment variables into the config.
-    command: /bin/sh -c "envsubst '$$LOCAL_DIR' < /etc/nginx/conf.d/default.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"
-
-    depends_on:
-      - php
-
-  ##
-  # The PHP container.
-  ##
-  php:
-    image: wordpressdevelop/php:${LOCAL_PHP-latest}
-
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
     networks:
-      - wpdevnet
+      - wordpress.test
 
-    environment:
-      LOCAL_PHP_XDEBUG: ${LOCAL_PHP_XDEBUG-false}
-      LOCAL_PHP_MEMCACHED: ${LOCAL_PHP_MEMCACHED-false}
-      PHP_FPM_UID: ${PHP_FPM_UID-1000}
-      PHP_FPM_GID: ${PHP_FPM_GID-1000}
-
-    volumes:
-      - ./tools/local-env/php-config.ini:/usr/local/etc/php/conf.d/php-config.ini
-      - ./:/var/www
-
-    depends_on:
-      - mysql
-
-  ##
-  # The MySQL container.
-  ##
   mysql:
     image: mysql:${LOCAL_MYSQL-latest}
-
     networks:
-      - wpdevnet
-
+      - wordpress.test
+    ports:
+      - 3306:3306
     environment:
       MYSQL_ROOT_PASSWORD: password
-
     volumes:
       - ./tools/local-env/mysql-init.sql:/docker-entrypoint-initdb.d/mysql-init.sql
       - mysql:/var/lib/mysql
-
-    # For compatibility with PHP versions that don't support the caching_sha2_password auth plugin used in MySQL 8.0.
     command: --default-authentication-plugin=mysql_native_password
 
-  ##
-  # The WP CLI container.
-  ##
-  cli:
-    image: wordpressdevelop/cli:${LOCAL_PHP-latest}
-
+  browserless:
+    image: browserless/chrome
+    container_name: "browserless"
     networks:
-      - wpdevnet
+      - wordpress.test
+    environment:
+      - DEBUG=browserless/chrome
+      - MAX_CONCURRENT_SESSIONS=10
+      - FUNCTION_EXTERNALS=["lighthouse"]
+      - FUNCTION_BUILT_INS=["url"]
+    ports:
+      - "3000:3000"
+    restart: always
+    links:
+      - wp:wczgz2020.wordpress.test
 
+  wp:
+    image: nginx:alpine
+    depends_on: ["mysql"]
+    networks:
+      - wordpress.test
+    volumes:
+      - ./tools/local-env/default.template:/etc/nginx/conf.d/default.template
+      - ./:/var/www
+    environment:
+      - LOCAL_DIR=${LOCAL_DIR-src}
+    labels:
+      - "traefik.docker.network=services_wordpress.test"
+      - "traefik.http.routers.wp.rule=Host(`wczgz2020.wordpress.test`)"
+      - "traefik.http.services.wp.loadbalancer.server.port=80"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        envsubst '$$LOCAL_DIR' < /etc/nginx/conf.d/default.template > /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'
+    depends_on:
+      - php
+      - traefik
+
+  php:
+    image: wordpressdevelop/php:${LOCAL_PHP-latest}
+    networks:
+      - wordpress.test
     environment:
       LOCAL_PHP_XDEBUG: ${LOCAL_PHP_XDEBUG-false}
       LOCAL_PHP_MEMCACHED: ${LOCAL_PHP_MEMCACHED-false}
       PHP_FPM_UID: ${PHP_FPM_UID-1000}
       PHP_FPM_GID: ${PHP_FPM_GID-1000}
+    volumes:
+      - ./tools/local-env/php-config.ini:/usr/local/etc/php/conf.d/php-config.ini
+      - ./:/var/www
+    depends_on:
+      - mysql
 
+  cli:
+    image: wordpressdevelop/cli:${LOCAL_PHP-latest}
+    networks:
+      - wordpress.test
+    environment:
+      LOCAL_PHP_XDEBUG: ${LOCAL_PHP_XDEBUG-false}
+      LOCAL_PHP_MEMCACHED: ${LOCAL_PHP_MEMCACHED-false}
+      PHP_FPM_UID: ${PHP_FPM_UID-1000}
+      PHP_FPM_GID: ${PHP_FPM_GID-1000}
     volumes:
       - ./:/var/www
-
-    # The init directive ensures the command runs with a PID > 1, so Ctrl+C works correctly.
     init: true
 
-  ##
-  # The PHPUnit container.
-  ##
   phpunit:
     image: wordpressdevelop/phpunit:${LOCAL_PHP-latest}
-
     networks:
-      - wpdevnet
-
+      - wordpress.test
     environment:
       LOCAL_PHP_XDEBUG: ${LOCAL_PHP_XDEBUG-false}
       LOCAL_PHP_MEMCACHED: ${LOCAL_PHP_MEMCACHED-false}
@@ -107,25 +112,14 @@ services:
       PHP_FPM_GID: ${PHP_FPM_GID-1000}
       TRAVIS_BRANCH: ${TRAVIS_BRANCH-false}
       TRAVIS_PULL_REQUEST: ${TRAVIS_PULL_REQUEST-false}
-
     volumes:
       - ./tools/local-env/phpunit-config.ini:/usr/local/etc/php/conf.d/phpunit-config.ini
       - ./:/var/www
       - phpunit-uploads:/var/www/${LOCAL_DIR-src}/wp-content/uploads
-
-    # The init directive ensures the command runs with a PID > 1, so Ctrl+C works correctly.
     init: true
-
     depends_on:
       - mysql
 
 volumes:
-  # So that sites aren't wiped every time containers are restarted, MySQL uses a persistent volume.
   mysql: {}
-  # Using a volume for the uploads directory improves PHPUnit performance.
   phpunit-uploads: {}
-
-networks:
-  # Creating our own network allows us to connect between containers using their service name.
-  wpdevnet:
-    driver: bridge
